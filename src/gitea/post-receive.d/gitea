@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+/usr/bin/gitea hook --config=/etc/gitea/conf/app.ini post-receive

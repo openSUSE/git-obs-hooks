@@ -1,0 +1,39 @@
+#!/bin/sh
+
+
+# Check if all new git commits have LFS objects available
+
+
+set -eu
+
+
+if ! which git-lfs &> /dev/null; then
+    echo "ERROR: git-lfs command not found."
+    exit 1
+fi
+
+
+while read -r old_oid new_oid ref_name; do
+    # determine if we're creating a new branch - old_oid is all zeros
+    if [[ "${old_oid}" =~ ^0+$ ]]; then
+        new_branch=1
+    else
+        new_branch=0
+    fi
+
+    # list all commits for a new branch or new commits for an existing branch
+    if [ ${new_branch} -eq 1 ]; then
+        new_commits=$(git rev-list "${new_oid}")
+    else
+        new_commits=$(git rev-list "${old_oid}".."${new_oid}")
+    fi
+
+    # run check for each new commit
+    for commit in ${new_commits}; do
+        if ! git lfs fsck --objects --pointers "${commit}"; then
+            echo "ERROR: Git LFS consistency check failed for branch: ${ref_name}, commit: ${commit}"
+            echo "Push rejected."
+            exit 1
+        fi
+    done
+done

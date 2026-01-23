@@ -1,0 +1,103 @@
+#!/bin/bash
+
+
+set -eu
+
+
+GIT_OBS_HOOKS_DEBUG="${GIT_OBS_HOOKS_DEBUG:=0}"
+GIT_OBS_HOOKS_VERBOSE="${GIT_OBS_HOOKS_VERBOSE:=0}"
+XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+TOPDIR_HOME="${XDG_DATA_HOME}/git-obs-hooks"
+
+
+# edit this function if there are any additional hooks that use stdin
+hook_uses_stdin() {
+    local hook_name="$1"
+    shift
+
+    case "${hook_name}" in
+        "post-receive" | "post-update" | "pre-push" | "pre-receive")
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+
+debug_msg() {
+    if [ "${GIT_OBS_HOOKS_DEBUG}" = 1 ]; then
+        echo "DEBUG: $*" >&2
+    fi
+}
+
+
+verbose_msg() {
+    if [ "${GIT_OBS_HOOKS_DEBUG}" = 1 ] || [ "${GIT_OBS_HOOKS_VERBOSE}" = 1 ]; then
+        echo "VERBOSE: $*" >&2
+    fi
+}
+
+
+error_msg() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+
+# run_hooks <topdir> <hook_name> [--with-home-hooks] ...
+run_hooks() {
+    local topdir="$1"
+    shift
+    local hook_name="$1"
+    shift
+
+    local data=
+    if hook_uses_stdin "${hook_name}"; then
+        data=$(cat)
+    fi
+
+    if [ "${1:-}" == "--with-home-hooks" ]; then
+        # we're always piping data for simplicity, hooks that don't use stdin will ignore it
+        echo "${data}" | run_hooks "${TOPDIR_HOME}" "${hook_name}"
+        shift
+    fi
+
+    hook_dir="${topdir}/${hook_name}.d"
+
+    if [ ! -d "${hook_dir}" ]; then
+        debug_msg "Skipping running '${hook_name}' hooks because the directory is missing: ${hook_dir}"
+        return
+    fi
+
+    local hook_path
+    for hook_path in "${hook_dir}"/*; do
+        if [ ! -f "${hook_path}" ]; then
+            debug_msg "Skipping ${hook_path} because it's not a file"
+            continue
+        fi
+
+        if [ ! -x "${hook_path}" ]; then
+            debug_msg "Skipping ${hook_path} because it's not executable"
+            continue
+        fi
+
+        verbose_msg "Running ${hook_path}"
+        local success=0
+        if [ -z "${data}" ]; then
+            if "${hook_path}" "$@"; then
+                success=1
+            fi
+        else
+            if echo "${data}" | "${hook_path}" "$@"; then
+                success=1
+            fi
+        fi
+
+        if [ ${success} -eq 0 ]; then
+            error_msg "Running ${hook_path} failed"
+        fi
+
+    done
+}

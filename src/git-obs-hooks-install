@@ -1,0 +1,5 @@
+#!/bin/bash
+
+TOPDIR=$(dirname $(readlink -f $0))
+HOOKS_PATH="${TOPDIR}/git-obs"
+git config --local core.hooksPath "${HOOKS_PATH}"
