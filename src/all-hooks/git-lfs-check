@@ -1,0 +1,107 @@
+#!/bin/sh
+#
+# Custom Git LFS enforcement hook.
+# This script enforces .gitattributes: It rejects files that should be in LFS
+# based on .gitattributes but were committed as regular Git objects.
+#
+# It does NOT verify the integrity of LFS objects on disk.
+
+set -eu
+
+echo "Running hook: $(basename $0)"
+
+error_lfs() {
+    echo "ERROR: File should be in LFS but was committed directly to git!" >&2
+    echo "Verify you have Git LFS installed ('git lfs install')." >&2
+    echo "Reason: .gitattributes matches this file with 'filter=lfs'." >&2
+    echo "Commit/range: ${range}" >&2
+    echo "File: ${file_path}" >&2
+    exit 1
+}
+
+# Helper to check if a blob is an LFS pointer.
+is_blob_lfs_pointer() {
+    blob_hash="$1"
+    # Optimization: check size first as pointers are small.
+    blob_size=$(git cat-file -s "$blob_hash" || echo 0)
+    if [ "$blob_size" -lt 250 ]; then
+        if git cat-file blob "$blob_hash" | git lfs pointer --check --stdin; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Read the old and new commit SHAs from stdin.
+while read -r old_rev new_rev ref_name; do
+
+    # Skip on branch deletion.
+    if [[ "$new_rev" =~ ^0+$ ]]; then
+        continue
+    fi
+
+    branch_create=false
+    range="${old_rev}..${new_rev}"
+
+    # Check if it's a new branch.
+    if [[ "${old_rev}" =~ ^0+$ ]]; then
+        branch_create=true
+        range="${new_rev}"
+    fi
+
+    # Determine merge-base between the pushed revision and the repository refs.
+    # Use merge-base as the lower bound to only check commits introduced
+    # relative to existing repo history.
+    merge_base=$(git merge-base "${new_rev}" $(git for-each-ref --format='%(objectname)') 2>/dev/null | head -n1 || true)
+    if [ -n "${merge_base}" ]; then
+        range="${merge_base}..${new_rev}"
+    fi
+
+    # Get list of all objects (blobs) and their paths in the commit range.
+    git rev-list --objects "${range}" | while read -r blob_hash file_path; do
+        # If file_path is empty, it's the commit/tree object itself.
+        if [ -z "${file_path}" ]; then
+            continue
+        fi
+
+        # Skip if it's not a blob (file).
+        type=$(git cat-file -t "${blob_hash}")
+        if [ "${type}" != "blob" ]; then
+            continue
+        fi
+
+        if ! is_blob_lfs_pointer "${blob_hash}"; then
+            # The file is NOT an LFS pointer. Check if it SHOULD be.
+
+            # Use git check-attr to see if 'filter=lfs' applies to this path.
+            # Specify --source to check against the .gitattributes in the revision being pushed.
+            attr_check=$(git check-attr --source "${new_rev}" filter -- "${file_path}" 2>/dev/null || true)
+
+            if echo "${attr_check}" | grep -q "${file_path}: filter: lfs"; then
+                # Check whether the path exists in the new revision's tree.
+                exists_in_tip=false
+                if git cat-file -e "${new_rev}:${file_path}" 2>/dev/null; then
+                    exists_in_tip=true
+                fi
+
+                if [ "${exists_in_tip}" = true ]; then
+                    # Get the blob hash of the path in the tip.
+                    tip_blob_hash=$(git rev-parse "${new_rev}:${file_path}" 2>/dev/null || true)
+                    if ! is_blob_lfs_pointer "${tip_blob_hash}"; then
+                        error_lfs
+                    elif [ "${branch_create}" = false ]; then
+                        error_lfs
+                    fi
+                else
+                    # File is only in history. Allow pushing new branch, otherwise error.
+                    if [ "${branch_create}" = false ]; then
+                        error_lfs
+                    fi
+                fi
+            fi
+        fi
+    done
+done
+
+echo "Finished hook: $(basename $0)"
+exit 0
