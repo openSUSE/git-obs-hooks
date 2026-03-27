@@ -1,0 +1,54 @@
+#!/usr/bin/python3
+
+"""
+A git hook that reports an error if a package submodule in a project git is blacklisted.
+"""
+
+import os
+import sys
+
+
+BLACKLIST_FILE = "_obs/hooks/package-submodule-blacklist.txt"
+if not os.path.isfile(BLACKLIST_FILE):
+    # skip the checking repos without the configuration file
+    sys.exit(0)
+
+
+def main():
+    from osc.git_scm import GitStore
+
+    store = GitStore(".", check=False)
+    if not store.is_project:
+        # the check is applicable only to projects
+        sys.exit(0)
+
+    package_paths = store.manifest.get_package_paths(store.topdir, relative=True)
+    submodules = store._git.get_submodules()
+
+    errors = []
+    submodule_names = set()
+    for key, value in submodules.items():
+        if value["path"] not in package_paths:
+            continue
+        if key != value["path"]:
+            errors.append(f"Submodule '{key}' has inconsistent path: {value['path']}")
+        submodule_names.add(os.path.basename(key))
+
+    if errors:
+        print("The following errors were found while processing the project:")
+        for error in errors:
+            print(f"  - {error}")
+
+    with open(BLACKLIST_FILE, "r", encoding="utf-8") as f:
+        blacklist_names = {i.strip() for i in f.readlines() if i.strip()}
+
+    matches = sorted(submodule_names & blacklist_names)
+    if matches:
+        print("The following package submodule names are blacklisted: ")
+        for name in matches:
+            print(f"  - {name}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
