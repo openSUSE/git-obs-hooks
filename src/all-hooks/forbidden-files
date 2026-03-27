@@ -3,6 +3,8 @@
 
 # Check if all new git commits don't contain forbidden files:
 # - .osc
+# - _scmsync.obsinfo
+# - build.specials.obscpio
 
 
 set -eu
@@ -34,9 +36,9 @@ while read -r old_oid new_oid ref_name; do
     # run check for each new commit
     for commit in ${new_commits}; do
         # forbid .osc anywhere in the directory structure
-        matches=$(git show --pretty="" --name-only "${commit}" | grep -E '(^|/)\.osc($|/)' || :)
+        matches=$(git show --pretty="" --name-only "${commit}" | grep -E '(^|/)(\.osc|_scmsync\.obsinfo|build\.specials\.obscpio)($|/)' || :)
         if [ -n "${matches}" ]; then
-            echo "ERROR: Forbidden file or directory .osc found in commit ${commit}"
+            echo "ERROR: Forbidden file or directory found in commit ${commit}"
             echo "${matches}"
             failed=1
         fi
