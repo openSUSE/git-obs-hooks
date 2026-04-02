@@ -9,4 +9,28 @@ fi
 
 TOPDIR=$(dirname $(readlink -f $0))
 HOOKS_PATH="${TOPDIR}/gitea"
-git config --global core.hooksPath "${HOOKS_PATH}"
+
+
+GITEA_HOME=/var/lib/gitea/data/home
+if [ "${HOME}" != "${GITEA_HOME}" ]; then
+    echo "WARNING: gitea user home is '${HOME}', expected '${GITEA_HOME}'"
+    exit 1
+fi
+if [ ! -d "${GITEA_HOME}" ]; then
+  echo "WARNING: gitea user home does not exist, skipping hook setup"
+  exit 1
+fi
+
+
+CURRENT_HOOKS_PATH="$(git config --file "${GITEA_HOME}/.gitconfig" --get core.hooksPath ||:)"
+if [ -n "${CURRENT_HOOKS_PATH}" ] && [ "${CURRENT_HOOKS_PATH}" != "${HOOKS_PATH}" ]; then
+  echo "WARNING: gitea's git configuration currently uses a different core.hooksPath:"
+  echo "  current : '${CURRENT_HOOKS_PATH}'"
+  echo "  expected: '${HOOKS_PATH}'"
+  echo "The current value will be overwritten."
+fi
+
+
+if [ "${CURRENT_HOOKS_PATH}" != "${HOOKS_PATH}" ]; then
+  git config --global core.hooksPath "${HOOKS_PATH}"
+fi
