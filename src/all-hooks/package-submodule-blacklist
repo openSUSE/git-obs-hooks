@@ -2,11 +2,11 @@
 #
 # A git server hook that rejects pushes containing blacklisted package submodules.
 
-set -eu -o pipefail
-
-echo "Running hook: $(basename $0)"
+set -euo pipefail
 
 BLACKLIST_FILE="_obs/hooks/package-submodule-blacklist.txt"
+
+hook_name_printed=false
 
 # Read the old and new commit SHAs from stdin.
 while read -r old_rev new_rev ref_name; do
@@ -14,14 +14,18 @@ while read -r old_rev new_rev ref_name; do
     # Skip on branch deletion.
     [[ "$new_rev" =~ ^0+$ ]] && continue
 
-    # Determine range and which revision to read blacklist from.
+    # Handle branch creation.
+    range="${old_rev}..${new_rev}"
+    blacklist_rev="$old_rev"
     if [[ "$old_rev" =~ ^0+$ ]]; then
         range="$new_rev"
         blacklist_rev="$new_rev"
-    else
-        range="${old_rev}..${new_rev}"
-        blacklist_rev="$old_rev"
     fi
+
+    # Skip if blacklist file does not exist in this revision.
+    git cat-file -e "${blacklist_rev}:${BLACKLIST_FILE}" 2>/dev/null || continue
+
+    [ "$hook_name_printed" = false ] && echo "Running hook: $(basename $0)" && hook_name_printed=true
 
     # Load blacklist file into an in-memory set.
     declare -A blacklist_names=()
