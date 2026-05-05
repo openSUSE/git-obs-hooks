@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# A git server hook that rejects pushes containing blacklisted package submodules.
+
+set -eu -o pipefail
+
+echo "Running hook: $(basename $0)"
+
+BLACKLIST_FILE="_obs/hooks/package-submodule-blacklist.txt"
+
+# Read the old and new commit SHAs from stdin.
+while read -r old_rev new_rev ref_name; do
+
+    # Skip on branch deletion.
+    [[ "$new_rev" =~ ^0+$ ]] && continue
+
+    # Determine range and which revision to read blacklist from.
+    if [[ "$old_rev" =~ ^0+$ ]]; then
+        range="$new_rev"
+        blacklist_rev="$new_rev"
+    else
+        range="${old_rev}..${new_rev}"
+        blacklist_rev="$old_rev"
+    fi
+
+    # Load blacklist file into an in-memory set.
+    declare -A blacklist_names=()
+    while IFS= read -r name; do
+        [ -n "$name" ] && blacklist_names["$name"]=1
+    done < <(git show "${blacklist_rev}:${BLACKLIST_FILE}" 2>/dev/null || true)
+    [ "${#blacklist_names[@]}" -eq 0 ] && continue
+
+    # Limit range to only new commits relative to repository history.
+    merge_base=$(git merge-base "${new_rev}" $(git for-each-ref --format='%(objectname)') 2>/dev/null | head -n1 || true)
+    [ -n "$merge_base" ] && range="${merge_base}..${new_rev}"
+
+    # Walk each introduced commit and check changed submodule entries.
+    declare -A matches=()
+    while read -r commit; do
+        while IFS=$'\t' read -r meta path _rest; do
+            read -r _old_mode new_mode _old_sha _new_sha status <<< "${meta#:}"
+            [ "$new_mode" = "160000" ] || continue
+            case "$status" in
+                D*) continue ;;
+            esac
+
+            name=${path##*/}
+            [ -n "${blacklist_names[$name]+x}" ] && matches["$name"]=1
+        done < <(git diff-tree --root -r --no-commit-id "$commit")
+    done < <(git rev-list "${range}")
+
+    if [ "${#matches[@]}" -gt 0 ]; then
+        echo "Commit/range: ${range}" >&2
+        # Report unique blacklisted submodules found.
+        printf '%s\n' "${!matches[@]}" | sort | while read -r name; do
+            echo "ERROR: Blacklisted submodule: ${name}" >&2
+        done
+        exit 1
+    fi
+
+done
+
+exit 0
