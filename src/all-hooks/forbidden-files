@@ -9,6 +9,7 @@
 
 set -eu
 
+echo "Running hook: $(basename $0)"
 
 if ! which git-lfs &> /dev/null; then
     echo "ERROR: git-lfs command not found."

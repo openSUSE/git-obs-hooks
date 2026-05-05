@@ -103,5 +103,4 @@ while read -r old_rev new_rev ref_name; do
     done
 done
 
-echo "Finished hook: $(basename $0)"
 exit 0
