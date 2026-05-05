@@ -28,7 +28,7 @@ Requires:       %{name}-common >= %{version}
 BuildArch:      noarch
 
 %description
-Client-side hooks for git and git-based osc.
+Client-side hooks for git and git-based osc operations.
 
 %package common
 Summary:        Git hooks for the OBS and Gitea ecosystem
@@ -44,11 +44,11 @@ for both client-side (git, osc) and server-side (Gitea) operations.
 %package gitea
 Summary:        Server-side git hooks for Gitea
 Group:          Development/Tools/Other
-Requires:       %{name} >= %{version}
+Requires:       %{name}-common >= %{version}
 BuildArch:      noarch
 
 %description gitea
-Server-side hooks for Gitea - based on Gitea's generated hooks.
+Server-side git hooks for Gitea based on Gitea's generated hooks.
 
 %prep
 %autosetup
