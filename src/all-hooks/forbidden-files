@@ -23,7 +23,7 @@ while read -r old_rev new_rev ref_name; do
     base_revs="$old_rev"
     if [[ "${old_rev}" =~ ^0+$ ]]; then
         branch_create=true
-        base_revs=$(git for-each-ref --format='%(objectname)' | sort -u | xargs)
+        base_revs=$(git for-each-ref --format='%(objectname)' refs/heads | sort -u | xargs)
     fi
 
     # Limit range to only new commits relative to repository history.
