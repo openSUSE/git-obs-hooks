@@ -57,6 +57,13 @@ while read -r old_rev new_rev ref_name; do
         range="${merge_base}..${new_rev}"
     fi
 
+    # Check traversal is possible before processing.
+    if ! git rev-list --objects "${range}" >/dev/null; then
+        echo "ERROR: Unable to check LFS files: commit graph is not fully available." >&2
+        echo "Hint: If you pushed from a shallow clone, re-clone without --depth and retry." >&2
+        exit 1
+    fi
+
     # Get list of all objects (blobs) and their paths in the commit range.
     git rev-list --objects "${range}" | while read -r blob_hash file_path; do
         # If file_path is empty, it's the commit/tree object itself.
