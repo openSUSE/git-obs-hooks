@@ -85,12 +85,14 @@ run_hooks() {
 
         verbose_msg "Running ${hook_path}"
         local success=0
+        TIMEFORMAT="Hook '${hook_name}' took %2Rs"
         if [ -z "${data}" ]; then
-            if "${hook_path}" "$@"; then
+            if time "${hook_path}" "$@"; then
                 success=1
             fi
         else
-            if echo "${data}" | "${hook_path}" "$@"; then
+            # 'time "${hook_path}"' would call /usr/bin/time but we want the bash built-in that honors $TIMEFORMAT
+            if time echo "${data}" | "${hook_path}" "$@"; then
                 success=1
             fi
         fi
