@@ -1,113 +1,185 @@
-#!/bin/sh
-#
-# Custom Git LFS enforcement hook.
-# This script enforces .gitattributes: It rejects files that should be in LFS
-# based on .gitattributes but were committed as regular Git objects.
-#
-# It does NOT verify the integrity of LFS objects on disk.
+#!/usr/bin/python3
 
-set -eu
+"""
+Custom Git LFS hook that enforces .gitattributes:
+It rejects files that should be in LFS based on .gitattributes
+but were committed as regular Git objects and vice-versa.
 
-echo "Running hook: $(basename $0)"
+It does NOT verify the integrity of LFS objects on disk.
+"""
 
-error_lfs() {
-    echo "ERROR: File should be in LFS but was committed directly to git!" >&2
-    echo "Verify you have Git LFS installed ('git lfs install')." >&2
-    echo "Reason: .gitattributes matches this file with 'filter=lfs'." >&2
-    echo "Commit/range: ${range}" >&2
-    echo "File: ${file_path}" >&2
-    exit 1
-}
+import subprocess
+import sys
+from typing import Dict, List
 
-# Helper to check if a blob is an LFS pointer.
-is_blob_lfs_pointer() {
-    blob_hash="$1"
-    # Optimization: check size first as pointers are small.
-    blob_size=$(git cat-file -s "$blob_hash" || echo 0)
-    if [ "$blob_size" -lt 250 ]; then
-        if git cat-file blob "$blob_hash" | git lfs pointer --check --stdin; then
-            return 0
-        fi
-    fi
-    return 1
-}
+from osc.gitea_api import Git
 
-# Read the old and new commit SHAs from stdin.
-while read -r old_rev new_rev ref_name; do
 
-    # Skip on branch deletion.
-    if [[ "$new_rev" =~ ^0+$ ]]; then
-        continue
-    fi
+class LfsChecker:
+    def __init__(self, git: Git):
+        self.git = git
+        self.cache: Dict[str, bool] = {}
 
-    branch_create=false
-    range="${old_rev}..${new_rev}"
+    def get_attributes(self, rev: str, paths: List[str]) -> Dict[str, str]:
+        """Query git check-attr for the 'filter' attribute."""
+        if not paths:
+            return {}
 
-    # Check if it's a new branch.
-    if [[ "${old_rev}" =~ ^0+$ ]]; then
-        branch_create=true
-        range="${new_rev}"
-    fi
+        with subprocess.Popen(
+            ["git", "check-attr", "--source", rev, "--stdin", "filter"],
+            cwd=self.git.abspath,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,
+            encoding="utf-8",
+        ) as proc:
 
-    # Determine merge-base between the pushed revision and the repository refs.
-    # Use merge-base as the lower bound to only check commits introduced
-    # relative to existing repo history.
-    merge_base=$(git merge-base "${new_rev}" $(git for-each-ref --format='%(objectname)' refs/heads/) 2>/dev/null | head -n1 || true)
-    if [ -n "${merge_base}" ]; then
-        range="${merge_base}..${new_rev}"
-    fi
+            stdout, _ = proc.communicate(input="\n".join(paths))
+            if proc.returncode != 0:
+                raise RuntimeError(f"git check-attr failed for revision {rev}")
 
-    # Check traversal is possible before processing.
-    if ! git rev-list --objects "${range}" >/dev/null; then
-        echo "ERROR: Unable to check LFS files: commit graph is not fully available." >&2
-        echo "Hint: If you pushed from a shallow clone, re-clone without --depth and retry." >&2
-        exit 1
-    fi
+        results = {}
+        for line in stdout.splitlines():
+            # format: <path>: filter: <value>
+            # git uses ': ' (colon + space) as a reliable separator
+            try:
+                path, attr, value = line.split(": ", 2)
+            except ValueError:
+                # failed to split line into exactly 3 parts
+                raise RuntimeError(f"Malformed output from git check-attr: '{line}'")
 
-    # Get list of all objects (blobs) and their paths in the commit range.
-    git rev-list --objects "${range}" | while read -r blob_hash file_path; do
-        # If file_path is empty, it's the commit/tree object itself.
-        if [ -z "${file_path}" ]; then
-            continue
-        fi
+            if attr != "filter":
+                raise RuntimeError(f"Unexpected attribute in git check-attr output: '{attr}'")
 
-        # Skip if it's not a blob (file).
-        type=$(git cat-file -t "${blob_hash}")
-        if [ "${type}" != "blob" ]; then
-            continue
-        fi
+            # Git may quote paths with special characters (core.quotepath).
+            if path.startswith('"') and path.endswith('"'):
+                # handle git's octal/hex escaping
+                try:
+                    path = path[1:-1].encode("utf-8").decode("unicode_escape")
+                except Exception:
+                    path = path[1:-1]
 
-        if ! is_blob_lfs_pointer "${blob_hash}"; then
-            # The file is NOT an LFS pointer. Check if it SHOULD be.
+            results[path] = value
+        return results
 
-            # Use git check-attr to see if 'filter=lfs' applies to this path.
-            # Specify --source to check against the .gitattributes in the revision being pushed.
-            attr_check=$(git check-attr --source "${new_rev}" filter -- "${file_path}" 2>/dev/null || true)
+    def verify_blobs(self, rev: str, file_to_hash: Dict[str, str], hash_to_size: Dict[str, int], attrs: Dict[str, str]):
+        """Verify LFS compliance for a set of files using batched cat-file."""
+        to_check = []
+        unique_hashes = set()
 
-            if echo "${attr_check}" | grep -Fq "${file_path}: filter: lfs"; then
-                # Check whether the path exists in the new revision's tree.
-                exists_in_tip=false
-                if git cat-file -e "${new_rev}:${file_path}" 2>/dev/null; then
-                    exists_in_tip=true
-                fi
+        for h in file_to_hash.values():
+            if h in self.cache or h in unique_hashes:
+                continue
 
-                if [ "${exists_in_tip}" = true ]; then
-                    # Get the blob hash of the path in the tip.
-                    tip_blob_hash=$(git rev-parse "${new_rev}:${file_path}" 2>/dev/null || true)
-                    if ! is_blob_lfs_pointer "${tip_blob_hash}"; then
-                        error_lfs
-                    elif [ "${branch_create}" = false ]; then
-                        error_lfs
-                    fi
-                else
-                    # File is only in history. Allow pushing new branch, otherwise error.
-                    if [ "${branch_create}" = false ]; then
-                        error_lfs
-                    fi
-                fi
-            fi
-        fi
-    done
-done
+            # PREPROCESSING: LFS pointers are tiny (< 1KB), skip any larger blobs
+            if hash_to_size.get(h, 0) > 1024:
+                self.cache[h] = False
+                continue
 
-exit 0
+            to_check.append(h)
+            unique_hashes.add(h)
+
+        if to_check:
+            # NOTE: We must use binary mode (bytes) for cat-file --batch because:
+            # 1. Blobs can contain arbitrary binary data that is not valid UTF-8.
+            # 2. Git reports object size in BYTES. If we used text mode (encoding="utf-8"),
+            #    read(size) would read 'size' CHARACTERS, which breaks protocol parsing
+            #    whenever a multi-byte UTF-8 character is encountered.
+            with subprocess.Popen(
+                ["git", "cat-file", "--batch"],
+                cwd=self.git.abspath,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,
+                bufsize=1024 * 1024,
+            ) as proc:
+
+                stdout_stream, _ = proc.communicate(input=("\n".join(to_check) + "\n").encode("utf-8"))
+                if proc.returncode != 0:
+                    raise RuntimeError("git cat-file --batch failed")
+
+            # parse the combined output buffer without slicing (zero-copy approach)
+            offset = 0
+            prefix = b"version https://git-lfs.github.com/spec/v1"
+            for h in to_check:
+                newline_idx = stdout_stream.find(b"\n", offset)
+                if newline_idx == -1:
+                    raise RuntimeError(f"git cat-file output truncated, expected object {h}")
+
+                header = stdout_stream[offset:newline_idx].decode("utf-8")
+                try:
+                    _hash, _type, size = header.split()
+                    size = int(size)
+                except ValueError:
+                    raise RuntimeError(f"Malformed git cat-file header or missing object: '{header}'")
+                content_start = newline_idx + 1
+                content_end = content_start + size
+
+                # verify LFS status directly in the buffer using offsets
+                self.cache[h] = stdout_stream.startswith(prefix, content_start, content_end)
+
+                offset = content_end + 1
+
+        # validation phase
+        errors = []
+        for path, h in file_to_hash.items():
+            should_be_lfs = attrs.get(path) == "lfs"
+            is_lfs = self.cache.get(h, False)
+
+            if should_be_lfs and not is_lfs:
+                errors.append(f"  - {path}: matches LFS attribute but is NOT an LFS pointer")
+            elif not should_be_lfs and is_lfs:
+                errors.append(f"  - {path}: is NOT matched by LFS attribute but IS an LFS pointer")
+
+        if errors:
+            print(f"LFS compliance errors in commit {rev}:", file=sys.stderr)
+            for err in errors:
+                print(err, file=sys.stderr)
+            return False
+        return True
+
+    def check_revision(self, rev: str) -> bool:
+        """Check if the specified revision is LFS compliant."""
+        try:
+            self.git._run_git(["cat-file", "-e", f"{rev}:.gitattributes"], mute_stderr=True)
+        except subprocess.CalledProcessError:
+            return True
+
+        tree_entries = self.git.ls_tree(rev)
+        file_to_hash = {}
+        hash_to_size = {}
+        for item in tree_entries:
+            if item["file_type"] != "file":
+                continue
+            path = item["path"]
+            h = item["commit"]
+            file_to_hash[path] = h
+            hash_to_size[h] = item["size"]
+
+        if not file_to_hash:
+            return True
+
+        attrs = self.get_attributes(rev, list(file_to_hash.keys()))
+        return self.verify_blobs(rev, file_to_hash, hash_to_size, attrs)
+
+
+def main():
+    git = Git(".")
+    checker = LfsChecker(git)
+    seen = set()
+    success = True
+
+    for old_rev, new_rev, _ref_name in git.parse_githook_stdin():
+        commits = git.get_commit_range(old_rev, new_rev, not_all=True)
+        for sha in commits:
+            if sha in seen:
+                continue
+            success &= checker.check_revision(sha)
+            seen.add(sha)
+
+    if not success:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
