@@ -12,10 +12,10 @@ TOPDIR_HOME="${XDG_DATA_HOME}/git-obs-hooks"
 
 # edit this function if there are any additional hooks that use stdin
 hook_uses_stdin() {
-    local hook_name="$1"
+    local hook_type="$1"
     shift
 
-    case "${hook_name}" in
+    case "${hook_type}" in
         "post-receive" | "post-update" | "pre-push" | "pre-receive")
             return 0
             ;;
@@ -46,28 +46,28 @@ error_msg() {
 }
 
 
-# run_hooks <topdir> <hook_name> [--with-home-hooks] ...
+# run_hooks <topdir> <hook_type> [--with-home-hooks] ...
 run_hooks() {
     local topdir="$1"
     shift
-    local hook_name="$1"
+    local hook_type="$1"
     shift
 
     local data=
-    if hook_uses_stdin "${hook_name}"; then
+    if hook_uses_stdin "${hook_type}"; then
         data=$(cat)
     fi
 
     if [ "${1:-}" == "--with-home-hooks" ]; then
         # we're always piping data for simplicity, hooks that don't use stdin will ignore it
-        echo "${data}" | run_hooks "${TOPDIR_HOME}" "${hook_name}"
+        echo "${data}" | run_hooks "${TOPDIR_HOME}" "${hook_type}"
         shift
     fi
 
-    hook_dir="${topdir}/${hook_name}.d"
+    hook_dir="${topdir}/${hook_type}.d"
 
     if [ ! -d "${hook_dir}" ]; then
-        debug_msg "Skipping running '${hook_name}' hooks because the directory is missing: ${hook_dir}"
+        debug_msg "Skipping running '${hook_type}' hooks because the directory is missing: ${hook_dir}"
         return
     fi
 
@@ -85,7 +85,9 @@ run_hooks() {
 
         verbose_msg "Running ${hook_path}"
         local success=0
-        TIMEFORMAT="Hook '${hook_name}' took %2Rs"
+        local hook_name
+        hook_name=$(basename "${hook_path}")
+        TIMEFORMAT="Hook '${hook_type}/${hook_name}' took %2Rs"
         if [ -z "${data}" ]; then
             if time "${hook_path}" "$@"; then
                 success=1
