@@ -6,13 +6,16 @@ for both client-side (git, osc) and server-side (Gitea) operations.
 ## Installation
 
 **Note:** Installing these hooks will override any existing git hooks by redirecting the `core.hooksPath` git configuration.
+It also configures `diff.orderFile` so diffs prioritize changelog and packaging files.
 
 ### Client-side (for the current repository)
 
 ```bash
 /usr/libexec/git-obs-hooks/git-obs-hooks-install
 ```
-This will configure the current repository to use the OBS hooks.
+This will configure the current repository to use the OBS hooks and set:
+- `core.hooksPath=/usr/libexec/git-obs-hooks/git-obs`
+- `diff.orderFile=/usr/libexec/git-obs-hooks/git-diff-order`
 
 ### Server-side (for all Gitea repositories)
 
@@ -21,6 +24,9 @@ Run these commands as the `gitea` user:
 su - gitea
 /usr/libexec/git-obs-hooks/gitea-hooks-install
 ```
+This will configure Gitea's global Git config and set:
+- `core.hooksPath=/usr/libexec/git-obs-hooks/gitea`
+- `diff.orderFile=/var/lib/gitea/data/home/git-diff-order`
 
 ## Extending Hooks
 

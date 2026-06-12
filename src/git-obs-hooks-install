@@ -2,4 +2,6 @@
 
 TOPDIR=$(dirname $(readlink -f $0))
 HOOKS_PATH="${TOPDIR}/git-obs"
+DIFF_ORDER_PATH="${TOPDIR}/git-diff-order"
 git config --local core.hooksPath "${HOOKS_PATH}"
+git config --local diff.orderFile "${DIFF_ORDER_PATH}"

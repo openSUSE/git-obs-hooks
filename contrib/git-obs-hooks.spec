@@ -58,6 +58,7 @@ Server-side git hooks for Gitea based on Gitea's generated hooks.
 %install
 install -d %{buildroot}%{_libexecdir}/%{name}
 install -m 755 src/*install %{buildroot}%{_libexecdir}/%{name}/
+install -m 644 src/git-diff-order %{buildroot}%{_libexecdir}/%{name}/
 cp -rv src/{all-hooks,gitea,git-obs,common} %{buildroot}%{_libexecdir}/%{name}/
 
 %files
@@ -77,6 +78,7 @@ cp -rv src/{all-hooks,gitea,git-obs,common} %{buildroot}%{_libexecdir}/%{name}/
 %license LICENSE
 %dir %{_libexecdir}/git-obs-hooks/
 %{_libexecdir}/git-obs-hooks/common
+%{_libexecdir}/git-obs-hooks/git-diff-order
 %dir %{_libexecdir}/git-obs-hooks/all-hooks/
 %{_libexecdir}/git-obs-hooks/all-hooks/*
 
