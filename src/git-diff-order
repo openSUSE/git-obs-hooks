@@ -1,0 +1,23 @@
+# changelogs
+*.changes
+*.changes.json
+
+# build recipes
+*.productcompose
+*.spec
+*.dsc
+*.kiwi
+*.livebuild
+*flatpak.*
+Chart.yaml
+Containerfile*
+Dockerfile*
+PKGBUILD
+appimage.yml
+build.collax
+fissile.yml
+mkosi.*
+snapcraft.yaml
+
+# _service and other OBS specific files
+_*
