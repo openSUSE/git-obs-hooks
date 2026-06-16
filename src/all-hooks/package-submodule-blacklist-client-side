@@ -7,6 +7,8 @@ A git hook that reports an error if a package submodule in a project git is blac
 import os
 import sys
 
+sys.dont_write_bytecode = True
+
 
 BLACKLIST_FILE = "_obs/hooks/package-submodule-blacklist.txt"
 if not os.path.isfile(BLACKLIST_FILE):

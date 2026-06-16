@@ -11,9 +11,9 @@ It does NOT verify the integrity of LFS objects on disk.
 import subprocess
 import sys
 from typing import Dict, List
-
 from osc.gitea_api import Git
 
+sys.dont_write_bytecode = True
 
 class LfsChecker:
     def __init__(self, git: Git):
