@@ -23,7 +23,7 @@ Summary:        Client-side hooks for git and git-based osc
 License:        GPL-2.0-or-later
 Group:          Development/Tools/Other
 URL:            https://github.com/openSUSE/git-obs-hooks
-Source0:        https://github.com/openSUSE/git-obs-hooks/archive/refs/tags/%{version}.tar.gz#/%{name}-%{version}.tar.gz
+Source:         %{name}-%{version}.tar.gz
 Requires:       %{name}-common >= %{version}
 BuildArch:      noarch
 

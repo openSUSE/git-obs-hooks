@@ -1,4 +1,17 @@
 <services>
-  <service name="download_files" mode="manual"/>
-  <service name="set_version" mode="manual"/>
+  <service name="obs_scm" mode="manual">
+    <param name="extract">contrib/git-obs-hooks.spec</param>
+    <param name="url">https://github.com/openSUSE/git-obs-hooks.git</param>
+    <param name="scm">git</param>
+    <param name="revision">main</param>
+    <param name="versionformat">%ci.%h</param>
+    <param name="versionprefix">1.0</param>
+    <param name="changesgenerate">enable</param>
+  </service>
+  <service name="set_version" mode="buildtime"/>
+  <service name="tar" mode="buildtime"/>
+  <service name="recompress" mode="buildtime">
+    <param name="file">*.tar</param>
+    <param name="compression">gz</param>
+  </service>
 </services>
