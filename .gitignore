@@ -1,2 +1,5 @@
 contrib/*.tar.gz
+contrib/*.obscpio
+contrib/*.obsinfo
 contrib/_servicedata
+contrib/git-obs-hooks/
