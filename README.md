@@ -26,7 +26,7 @@ su - gitea
 ```
 This will configure Gitea's global Git config and set:
 - `core.hooksPath=/usr/libexec/git-obs-hooks/gitea`
-- `diff.orderFile=/var/lib/gitea/data/home/git-diff-order`
+- `diff.orderFile=/usr/libexec/git-obs-hooks/git-diff-order`
 
 ## Extending Hooks
 

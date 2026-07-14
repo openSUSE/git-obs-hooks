@@ -1,17 +1,20 @@
 #!/bin/bash
 
 
-if [ "${USER}" != "gitea" ]; then
+if [ "$(id -un 2>/dev/null ||:)" != "gitea" ]; then
     echo "This script must be run under user 'gitea'"
     exit 1
 fi
 
-GITEA_HOME=/var/lib/gitea/data/home
+GITEA_HOME="$(getent passwd gitea | cut -d: -f6)"
+if [ -z "${GITEA_HOME}" ]; then
+  echo "WARNING: gitea user entry not found, skipping hook setup"
+  exit 1
+fi
 
 TOPDIR=$(dirname $(readlink -f $0))
 HOOKS_PATH="${TOPDIR}/gitea"
-DIFF_ORDER_SOURCE="${TOPDIR}/git-diff-order"
-DIFF_ORDER_TARGET="${GITEA_HOME}/git-diff-order"
+DIFF_ORDER_TARGET="${TOPDIR}/git-diff-order"
 
 if [ "${HOME}" != "${GITEA_HOME}" ]; then
     echo "WARNING: gitea user home is '${HOME}', expected '${GITEA_HOME}'"
@@ -21,11 +24,21 @@ if [ ! -d "${GITEA_HOME}" ]; then
   echo "WARNING: gitea user home does not exist, skipping hook setup"
   exit 1
 fi
+if [ ! -d "${HOOKS_PATH}" ]; then
+  echo "WARNING: expected hooks directory does not exist, skipping hook setup"
+  echo "  expected: '${HOOKS_PATH}'"
+  exit 1
+fi
+if [ ! -f "${DIFF_ORDER_TARGET}" ]; then
+  echo "WARNING: expected diff ordering file does not exist, skipping hook setup"
+  echo "  expected: '${DIFF_ORDER_TARGET}'"
+  exit 1
+fi
 
 
 CURRENT_HOOKS_PATH="$(git config --file "${GITEA_HOME}/.gitconfig" --get core.hooksPath ||:)"
 if [ -n "${CURRENT_HOOKS_PATH}" ] && [ "${CURRENT_HOOKS_PATH}" != "${HOOKS_PATH}" ]; then
-  echo "WARNING: gitea's git configuration currently uses a different core.hooksPath:"
+  echo "WARNING: gitea's .gitconfig currently uses an unexpected core.hooksPath:"
   echo "  current : '${CURRENT_HOOKS_PATH}'"
   echo "  expected: '${HOOKS_PATH}'"
   echo "The current value will be overwritten."
@@ -36,16 +49,9 @@ if [ "${CURRENT_HOOKS_PATH}" != "${HOOKS_PATH}" ]; then
   git config --global core.hooksPath "${HOOKS_PATH}"
 fi
 
-if [ -f "${DIFF_ORDER_SOURCE}" ]; then
-  cp "${DIFF_ORDER_SOURCE}" "${DIFF_ORDER_TARGET}"
-  chmod 0644 "${DIFF_ORDER_TARGET}"
-else
-  echo "WARNING: missing diff ordering file '${DIFF_ORDER_SOURCE}'"
-fi
-
 CURRENT_DIFF_ORDER_FILE="$(git config --file "${GITEA_HOME}/.gitconfig" --get diff.orderFile ||:)"
 if [ -n "${CURRENT_DIFF_ORDER_FILE}" ] && [ "${CURRENT_DIFF_ORDER_FILE}" != "${DIFF_ORDER_TARGET}" ]; then
-  echo "WARNING: gitea's git configuration currently uses a different diff.orderFile:"
+  echo "WARNING: gitea's .gitconfig currently uses an unexpected diff.orderFile:"
   echo "  current : '${CURRENT_DIFF_ORDER_FILE}'"
   echo "  expected: '${DIFF_ORDER_TARGET}'"
   echo "The current value will be overwritten."
