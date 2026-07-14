@@ -23,8 +23,8 @@ Summary:        Client-side hooks for git and git-based osc
 License:        GPL-2.0-or-later
 Group:          Development/Tools/Other
 URL:            https://github.com/openSUSE/git-obs-hooks
-Source:         %{name}-%{version}.tar.gz
-Requires:       %{name}-common >= %{version}
+Source:         git-obs-hooks-%{version}.tar.gz
+Requires:       git-obs-hooks-common >= %{version}
 BuildArch:      noarch
 
 %description
@@ -45,7 +45,7 @@ for both client-side (git, osc) and server-side (Gitea) operations.
 %package gitea
 Summary:        Server-side git hooks for Gitea
 Group:          Development/Tools/Other
-Requires:       %{name}-common >= %{version}
+Requires:       git-obs-hooks-common >= %{version}
 BuildArch:      noarch
 
 %description gitea
@@ -57,30 +57,50 @@ Server-side git hooks for Gitea based on Gitea's generated hooks.
 %build
 
 %install
-install -d %{buildroot}%{_libexecdir}/%{name}
-install -m 755 src/*install %{buildroot}%{_libexecdir}/%{name}/
-install -m 644 src/git-diff-order %{buildroot}%{_libexecdir}/%{name}/
-cp -rv src/{all-hooks,gitea,git-obs,common} %{buildroot}%{_libexecdir}/%{name}/
+install -d %{buildroot}/usr/libexec/git-obs-hooks
+install -m 644 src/git-diff-order %{buildroot}/usr/libexec/git-obs-hooks/
+install -m 755 src/git-obs-hooks-install %{buildroot}/usr/libexec/git-obs-hooks/
+install -m 755 src/git-obs-hooks-uninstall %{buildroot}/usr/libexec/git-obs-hooks/
+install -m 755 src/gitea-hooks-install %{buildroot}/usr/libexec/git-obs-hooks/
+install -m 755 src/gitea-hooks-uninstall %{buildroot}/usr/libexec/git-obs-hooks/
+cp -rv src/{all-hooks,gitea,git-obs,common} %{buildroot}/usr/libexec/git-obs-hooks/
 
 %files
-%dir %{_libexecdir}/git-obs-hooks/git-obs
-%{_libexecdir}/git-obs-hooks/git-obs/*
-%{_libexecdir}/git-obs-hooks/git-obs-hooks-install
-%{_libexecdir}/git-obs-hooks/git-obs-hooks-uninstall
+%dir /usr/libexec/git-obs-hooks/git-obs
+/usr/libexec/git-obs-hooks/git-obs/*
+/usr/libexec/git-obs-hooks/git-obs-hooks-install
+/usr/libexec/git-obs-hooks/git-obs-hooks-uninstall
 
 %files gitea
-%dir %{_libexecdir}/git-obs-hooks/gitea
-%{_libexecdir}/git-obs-hooks/gitea/*
-%{_libexecdir}/git-obs-hooks/gitea-hooks-install
-%{_libexecdir}/git-obs-hooks/gitea-hooks-uninstall
+%dir /usr/libexec/git-obs-hooks/gitea
+/usr/libexec/git-obs-hooks/gitea/*
+/usr/libexec/git-obs-hooks/gitea-hooks-install
+/usr/libexec/git-obs-hooks/gitea-hooks-uninstall
+
+%post gitea
+if getent passwd gitea >/dev/null; then
+  GITEA_HOME=$(getent passwd gitea | cut -d: -f6)
+  if [ -n "${GITEA_HOME}" ] && [ -d "${GITEA_HOME}" ]; then
+    su -s /bin/bash - gitea -c "/usr/libexec/git-obs-hooks/gitea-hooks-install" || :
+  fi
+fi
+
+%postun gitea
+if [ "$1" -eq 0 ] && getent passwd gitea >/dev/null; then
+  GITEA_HOME=$(getent passwd gitea | cut -d: -f6)
+  if [ -n "${GITEA_HOME}" ] && [ -d "${GITEA_HOME}" ]; then
+    su -s /bin/bash - gitea -c "/usr/libexec/git-obs-hooks/gitea-hooks-uninstall" || :
+  fi
+fi
 
 %files common
 %doc README.md
 %license LICENSE
-%dir %{_libexecdir}/git-obs-hooks/
-%{_libexecdir}/git-obs-hooks/common
-%{_libexecdir}/git-obs-hooks/git-diff-order
-%dir %{_libexecdir}/git-obs-hooks/all-hooks/
-%{_libexecdir}/git-obs-hooks/all-hooks/*
+%dir /usr/libexec
+%dir /usr/libexec/git-obs-hooks/
+/usr/libexec/git-obs-hooks/common
+/usr/libexec/git-obs-hooks/git-diff-order
+%dir /usr/libexec/git-obs-hooks/all-hooks/
+/usr/libexec/git-obs-hooks/all-hooks/*
 
 %changelog
