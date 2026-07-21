@@ -81,7 +81,7 @@ cp -rv src/{all-hooks,gitea,git-obs,common} %{buildroot}/usr/libexec/git-obs-hoo
 if getent passwd gitea >/dev/null; then
   GITEA_HOME=$(getent passwd gitea | cut -d: -f6)
   if [ -n "${GITEA_HOME}" ] && [ -d "${GITEA_HOME}" ]; then
-    su -s /bin/bash - gitea -c "/usr/libexec/git-obs-hooks/gitea-hooks-install" || :
+    runuser -u gitea -- /usr/libexec/git-obs-hooks/gitea-hooks-install || :
   fi
 fi
 
@@ -89,7 +89,7 @@ fi
 if [ "$1" -eq 0 ] && getent passwd gitea >/dev/null; then
   GITEA_HOME=$(getent passwd gitea | cut -d: -f6)
   if [ -n "${GITEA_HOME}" ] && [ -d "${GITEA_HOME}" ]; then
-    su -s /bin/bash - gitea -c "/usr/libexec/git-obs-hooks/gitea-hooks-uninstall" || :
+    runuser -u gitea -- /usr/libexec/git-obs-hooks/gitea-hooks-uninstall || :
   fi
 fi
 
