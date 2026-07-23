@@ -35,7 +35,7 @@ Summary:        Git hooks for the OBS and Gitea ecosystem
 Group:          Development/Tools/Other
 Requires:       git-core
 Requires:       git-lfs
-Requires:       osc
+Requires:       osc >= 1.27.2
 BuildArch:      noarch
 
 %description common
