@@ -3,15 +3,37 @@ import tempfile
 import shutil
 import os
 import subprocess
-import sys
 
-# setup paths
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS_DIR = os.path.join(BASE_DIR, "src", "all-hooks")
 HOOK_PATH = os.path.join(HOOKS_DIR, "package-submodule-blacklist")
 
+BLACKLIST_FILE = ".git-workflow/hooks/package-submodule-blacklist.txt"
+# _manifest that declares "rpms" as a package subdirectory.
+SUBDIRECTORY_MANIFEST = "packages: []\nsubdirectories:\n  - rpms\n"
+# Substring the hook prints when it rejects a submodule.
+REJECTION_MESSAGE = "The following package submodule names are blacklisted"
+
 
 class TestPackageSubmoduleBlacklist(unittest.TestCase):
+    # Repository setup -----------------------------------------------------
+
+    def setUp(self):
+        self.old_cwd = os.getcwd()
+        self.tmpdir = tempfile.mkdtemp(prefix="psb_test_")
+
+        # Local development repository (pushes to the "factory" branch).
+        self.repo_path = self.create_new_repo(os.path.join(self.tmpdir, "repo"), branch="factory")
+
+        # Bare remote where the pre-receive hook runs. The hook is installed
+        # per test via install_hook() so tests can push before it is active.
+        self.bare_repo_path = self.create_new_repo(os.path.join(self.tmpdir, "bare_repo.git"), bare=True)
+        self.run_git(["remote", "add", "origin", self.bare_repo_path])
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        shutil.rmtree(self.tmpdir)
+
     def create_new_repo(self, path, bare=False, branch="main"):
         os.makedirs(path, exist_ok=True)
         args = ["init", "-q", "-b", branch]
@@ -23,136 +45,178 @@ class TestPackageSubmoduleBlacklist(unittest.TestCase):
             self.run_git(["config", "user.name", "Test User"], cwd=path)
         return path
 
-    def install_pre_receive_hook(self, repo_path):
-        pre_receive = os.path.join(repo_path, "hooks", "pre-receive")
-        shutil.copy2(HOOK_PATH, pre_receive)
+    def install_hook(self):
+        hook = os.path.join(self.bare_repo_path, "hooks", "pre-receive")
+        shutil.copy2(HOOK_PATH, hook)
+        # A non-executable hook is skipped silently by git, which would let the
+        # "allow" tests pass without ever exercising the hook. Fail loudly instead.
+        self.assertTrue(os.access(hook, os.X_OK), "pre-receive hook is not executable")
 
-    def install_pre_push_hook(self, repo_path):
-        pre_push = os.path.join(repo_path, ".git", "hooks", "pre-push")
-        os.makedirs(os.path.dirname(pre_push), exist_ok=True)
-        shutil.copy2(HOOK_PATH, pre_push)
-
-    def setUp(self):
-        self.old_cwd = os.getcwd()
-        self.tmpdir = tempfile.mkdtemp(prefix="psb_test_")
-
-        # local repo for development
-        self.repo_path = self.create_new_repo(os.path.join(self.tmpdir, "repo"), branch="factory")
-
-        # bare repo for hook execution
-        self.bare_repo_path = self.create_new_repo(os.path.join(self.tmpdir, "bare_repo.git"), bare=True)
-
-        # setup remote
-        self.run_git(["remote", "add", "origin", self.bare_repo_path], cwd=self.repo_path)
-
-    def tearDown(self):
-        os.chdir(self.old_cwd)
-        shutil.rmtree(self.tmpdir)
+    # Git helpers ----------------------------------------------------------
 
     def run_git(self, args, cwd=None, env=None):
+        # Isolate git from any ambient user/system configuration so results are reproducible.
         env = {
             **os.environ,
             **(env or {}),
-            "HOME": self.tmpdir,
-            # allow file protocol for submodules
-            "GIT_ALLOW_PROTOCOL": "file",
-            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": self.tmpdir,           # ignore ~/.gitconfig
+            "GIT_CONFIG_NOSYSTEM": "1",    # ignore /etc/gitconfig
         }
         return subprocess.check_output(
             ["git"] + args, cwd=cwd or self.repo_path, encoding="utf-8", stderr=subprocess.STDOUT, env=env
         )
 
-    def create_commit(self, files=None, msg="Commit", cwd=None):
-        if files:
-            for path, content in files.items():
-                full_path = os.path.join(cwd or self.repo_path, path)
-                os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                with open(full_path, "w") as f:
-                    f.write(content)
-                self.run_git(["add", path], cwd=cwd)
-        self.run_git(["commit", "-m", msg, "--allow-empty"], cwd=cwd)
-        return self.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+    def create_commit(self, files, msg="Commit"):
+        for path, content in files.items():
+            full_path = os.path.join(self.repo_path, path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w") as f:
+                f.write(content)
+            self.run_git(["add", path])
+        self.run_git(["commit", "-m", msg, "--allow-empty"])
 
-    def add_submodule(self, name, path, cwd=None):
+    def add_submodule(self, name, path):
         sub_repo_path = os.path.join(self.tmpdir, name)
         if not os.path.exists(sub_repo_path):
-            os.makedirs(sub_repo_path)
-            self.run_git(["init", "-q"], cwd=sub_repo_path)
-            self.run_git(["config", "user.email", "test@example.com"], cwd=sub_repo_path)
-            self.run_git(["config", "user.name", "Test User"], cwd=sub_repo_path)
+            self.create_new_repo(sub_repo_path)
             with open(os.path.join(sub_repo_path, "file"), "w") as f:
                 f.write("data")
             self.run_git(["add", "file"], cwd=sub_repo_path)
-            self.run_git(["commit", "-m", "Initial", "--allow-empty"], cwd=sub_repo_path)
+            self.run_git(["commit", "-m", "Initial"], cwd=sub_repo_path)
 
-        self.run_git(["submodule", "add", sub_repo_path, path], cwd=cwd)
-        self.run_git(["commit", "-m", f"Add submodule {name}"], cwd=cwd)
-        return self.run_git(["rev-parse", "HEAD"], cwd=cwd).strip()
+        self.run_git(["-c", "protocol.file.allow=always", "submodule", "add", sub_repo_path, path])
+        self.run_git(["commit", "-m", f"Add submodule {name}"])
 
-    def test_integration_no_blacklist(self):
-        self.install_pre_receive_hook(self.bare_repo_path)
-        files = {
-            "pkg1/file": "content",
-            "_manifest": "packages:\n  - pkg1\n",
-        }
-        self.create_commit(files)
-        self.run_git(["push", "origin", "factory"])
+    def remove_submodule(self, path):
+        self.run_git(["submodule", "deinit", "-f", path])
+        self.run_git(["rm", "-f", path])
+        self.run_git(["commit", "-m", f"Remove submodule {path}"])
 
-    def test_integration_with_blacklist_match(self):
-        self.install_pre_receive_hook(self.bare_repo_path)
-        files = {
-            ".git-workflow/hooks/package-submodule-blacklist.txt": "pkg1\n",
-            "_manifest": "packages:\n  - pkg1\n",
-        }
-        self.create_commit(files)
-        self.add_submodule("pkg1", "pkg1")
+    # Assertions -----------------------------------------------------------
 
+    def push(self, env=None):
+        return self.run_git(["push", "origin", "factory"], env=env)
+
+    def local_head(self):
+        return self.run_git(["rev-parse", "HEAD"]).strip()
+
+    def remote_head(self):
+        return self.run_git(["rev-parse", "refs/heads/factory"], cwd=self.bare_repo_path).strip()
+
+    def assert_push_allowed(self):
+        self.assertNotIn(REJECTION_MESSAGE, self.push())
+        # Confirm the commit actually landed on the remote, not just that push didn't error.
+        self.assertEqual(self.remote_head(), self.local_head())
+
+    def assert_push_rejected(self, name):
         with self.assertRaises(subprocess.CalledProcessError) as cm:
-            self.run_git(["push", "origin", "factory"])
+            self.push()
+        self.assertIn(REJECTION_MESSAGE, cm.exception.output)
+        self.assertIn(name, cm.exception.output)
 
-        self.assertIn("blacklisted", cm.exception.output)
-        self.assertIn("pkg1", cm.exception.output)
+    # Tests ----------------------------------------------------------------
 
-    def test_integration_pre_push_blacklist_match(self):
-        # install hook as pre-push in local repo
-        self.install_pre_push_hook(self.repo_path)
+    def test_package_simple_allow(self):
+        # Package files only, no blacklist -> push allowed.
+        self.install_hook()
+        self.create_commit({
+            "pkg1.spec": "Name: pkg1\nVersion: 1\n",
+            "pkg1.changes": "- Initial Version\n",
+        })
 
-        files = {
-            ".git-workflow/hooks/package-submodule-blacklist.txt": "pkg1\n",
-            "_manifest": "packages:\n  - pkg1\n",
-        }
-        self.create_commit(files)
-        self.add_submodule("pkg1", "pkg1")
+        self.assert_push_allowed()
 
-        with self.assertRaises(subprocess.CalledProcessError) as cm:
-            # this should trigger pre-push
-            self.run_git(["push", "origin", "factory"])
+    def test_project_blacklist_new_reject(self):
+        # Blacklisted submodule, no _manifest/_config files -> push rejected.
+        self.install_hook()
+        self.create_commit({BLACKLIST_FILE: "blacklisted-submodule\n"})
+        self.add_submodule("blacklisted-submodule", "blacklisted-submodule")
 
-        self.assertIn("blacklisted", cm.exception.output)
-        self.assertIn("pkg1", cm.exception.output)
+        self.assert_push_rejected("blacklisted-submodule")
 
-    def test_no_manifest_file_with_blacklist_match(self):
-        """
-        Test that when _manifest does not exist in the git history at all,
-        but the git repo is detected as a project due to presence of _config file,
-        the hook still runs, considers all top-level subdirectories/submodules
-        as packages, and correctly catches blacklisted submodules.
-        """
-        self.install_pre_receive_hook(self.bare_repo_path)
-        files = {
-            ".git-workflow/hooks/package-submodule-blacklist.txt": "pkg1\n",
-            "_config": "",
-        }
-        self.create_commit(files)
-        self.add_submodule("pkg1", "pkg1")
+    def test_project_blacklist_pre_exists_reject(self):
+        # Blacklist already on the remote; later adding a blacklisted submodule
+        # under a manifest subdirectory -> push rejected.
+        self.install_hook()
+        self.create_commit({
+            BLACKLIST_FILE: "blacklisted-submodule\n",
+            "_manifest": SUBDIRECTORY_MANIFEST,
+        })
+        self.push()
 
-        with self.assertRaises(subprocess.CalledProcessError) as cm:
-            self.run_git(["push", "origin", "factory"])
+        self.add_submodule("blacklisted-submodule", "rpms/blacklisted-submodule")
 
-        # we assert that the hook output contains the expected blacklist error,
-        # not a python AttributeError traceback caused by store.manifest set to None
-        self.assertIn("The following package submodule names are blacklisted", cm.exception.output)
-        self.assertIn("pkg1", cm.exception.output)
+        self.assert_push_rejected("blacklisted-submodule")
+
+    def test_project_config_allow(self):
+        # Project with _config, submodule not in the blacklist -> push allowed.
+        self.install_hook()
+        self.create_commit({
+            BLACKLIST_FILE: "blacklisted-submodule\n",
+            "_config": "# OBS Project Config\n",
+        })
+        self.add_submodule("allowed-submodule", "allowed-submodule")
+
+        self.assert_push_allowed()
+
+    def test_project_config_reject(self):
+        # Project with _config, blacklisted submodule -> push rejected.
+        self.install_hook()
+        self.create_commit({
+            BLACKLIST_FILE: "blacklisted-submodule\n",
+            "_config": "# OBS Project Config\n",
+        })
+        self.add_submodule("blacklisted-submodule", "blacklisted-submodule")
+
+        self.assert_push_rejected("blacklisted-submodule")
+
+    def test_project_manifest_allow(self):
+        # Project with _manifest, submodule not in the blacklist -> push allowed.
+        self.install_hook()
+        self.create_commit({
+            BLACKLIST_FILE: "blacklisted-submodule\n",
+            "_manifest": SUBDIRECTORY_MANIFEST,
+        })
+        self.add_submodule("allowed-submodule", "rpms/allowed-submodule")
+
+        self.assert_push_allowed()
+
+    def test_project_manifest_reject(self):
+        # Project with _manifest, blacklisted submodule -> push rejected.
+        self.install_hook()
+        self.create_commit({
+            BLACKLIST_FILE: "blacklisted-submodule\n",
+            "_manifest": SUBDIRECTORY_MANIFEST,
+        })
+        self.add_submodule("blacklisted-submodule", "rpms/blacklisted-submodule")
+
+        self.assert_push_rejected("blacklisted-submodule")
+
+    def test_project_manifest_submodule_delete_allow(self):
+        # Removing an already-pushed blacklisted submodule -> push allowed,
+        # because the new revision no longer contains it.
+        self.create_commit({
+            BLACKLIST_FILE: "blacklisted-submodule\n",
+            "_manifest": SUBDIRECTORY_MANIFEST,
+        })
+        self.add_submodule("blacklisted-submodule", "rpms/blacklisted-submodule")
+        self.push()
+
+        self.install_hook()
+        self.remove_submodule("rpms/blacklisted-submodule")
+
+        self.assert_push_allowed()
+
+    def test_skip_env_bypasses_blacklist(self):
+        # Blacklisted submodule pushed with the bypass env var set -> push allowed.
+        # Same setup as the reject tests, so this also proves the hook actually runs.
+        self.install_hook()
+        self.create_commit({BLACKLIST_FILE: "blacklisted-submodule\n"})
+        self.add_submodule("blacklisted-submodule", "blacklisted-submodule")
+
+        output = self.push(env={"PACKAGE_SUBMODULE_BLACKLIST_SKIP": "1"})
+        self.assertNotIn(REJECTION_MESSAGE, output)
+        self.assertEqual(self.remote_head(), self.local_head())
 
 
 if __name__ == "__main__":

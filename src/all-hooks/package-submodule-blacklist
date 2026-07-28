@@ -7,8 +7,8 @@ import sys
 if os.environ.get("PACKAGE_SUBMODULE_BLACKLIST_SKIP", None):
     sys.exit(0)
 
-from osc.git_scm import GitStore
-from osc.gitea_api import Git
+from osc.git_scm.store import GitStore
+from osc.gitea_api.git import Git
 
 
 BLACKLIST_FILE = ".git-workflow/hooks/package-submodule-blacklist.txt"
@@ -16,7 +16,7 @@ BLACKLIST_FILE = ".git-workflow/hooks/package-submodule-blacklist.txt"
 
 def check_revision(rev: str) -> bool:
     """
-    Check if the specified revision doesn't have any package submodules blacklisted.
+    Check whether a revision contains blacklisted package submodules.
     Return True on success, False on failure.
     """
     success = True
@@ -24,20 +24,6 @@ def check_revision(rev: str) -> bool:
     # we always need to instantiate a new GitStore because it uses ref to load the correct _manifest
     store = GitStore(".", ref=rev, check=False)
     git = store._git
-
-    if git.is_bare:
-        directories = git.ls_tree(rev)
-        directories = [i["path"] for i in directories if i["file_type"] in ("directory", "submodule")]
-        package_paths = store.manifest.get_package_paths_bare_git(store.topdir, directories=directories)
-    else:
-        package_paths = store.manifest.get_package_paths(store.topdir, relative=True)
-
-    submodules = store._git.get_submodules(ref=rev)
-    submodule_names = set()
-    for key, value in submodules.items():
-        if value["path"] not in package_paths:
-            continue
-        submodule_names.add(os.path.basename(key))
 
     blacklist_names = set()
     if git.is_bare:
@@ -54,6 +40,25 @@ def check_revision(rev: str) -> bool:
         except FileNotFoundError:
             # blacklist file doesn't exist -> skip the check, report success
             return success
+
+    manifest = store.manifest
+    if manifest is not None:
+        if git.is_bare:
+            directories = git.ls_tree(rev)
+            directories = [i["path"] for i in directories if i["file_type"] in ("directory", "submodule")]
+            package_paths = manifest.get_package_paths_bare_git(store.topdir, directories=directories)
+        else:
+            package_paths = manifest.get_package_paths(store.topdir, relative=True)
+    else:
+        directories = git.ls_tree(rev)
+        package_paths = [i["path"] for i in directories if i["file_type"] in ("directory", "submodule")]
+
+    submodules = store._git.get_submodules(ref=rev)
+    submodule_names = set()
+    for key, value in submodules.items():
+        if value["path"] not in package_paths:
+            continue
+        submodule_names.add(os.path.basename(key))
 
     blacklist_names = {os.path.basename(i) for i in blacklist_names}
 
@@ -90,7 +95,7 @@ def main():
     success = True
 
     # poor man's detection that we're in a pre-receive hook
-    is_pre_receive = git.is_bare
+    is_pre_receive = bool(git.is_bare)
 
     if is_pre_receive:
         rev_list = [(i[0], i[1]) for i in git.parse_githook_stdin()]
