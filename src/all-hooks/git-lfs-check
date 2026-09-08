@@ -10,7 +10,7 @@ It does NOT verify the integrity of LFS objects on disk.
 
 import subprocess
 import sys
-from typing import Dict, List
+from typing import Dict, List, Set
 from osc.gitea_api import Git
 
 sys.dont_write_bytecode = True
@@ -19,6 +19,40 @@ class LfsChecker:
     def __init__(self, git: Git):
         self.git = git
         self.cache: Dict[str, bool] = {}
+
+    def commits_with_lfs_attributes(self, commits: List[str]) -> Set[str]:
+        """Return commits whose .gitattributes enables git-lfs (contains 'filter=lfs')."""
+        if not commits:
+            return set()
+
+        # One batched query maps each commit to its .gitattributes blob (or 'missing').
+        stdout = subprocess.check_output(
+            ["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+            cwd=self.git.abspath,
+            stderr=subprocess.DEVNULL,
+            encoding="utf-8",
+            input="\n".join(f"{rev}:.gitattributes" for rev in commits) + "\n",
+        )
+
+        commits_to_check = set()
+        blob_has_lfs = {}  # each distinct .gitattributes blob is read at most once
+        for rev, line in zip(commits, stdout.splitlines()):
+            objectname, objecttype = line.split()
+            if objecttype != "blob":
+                continue
+
+            if objectname not in blob_has_lfs:
+                content = subprocess.check_output(
+                    ["git", "cat-file", "blob", objectname],
+                    cwd=self.git.abspath,
+                    stderr=subprocess.DEVNULL,
+                )
+                blob_has_lfs[objectname] = b"filter=lfs" in content
+
+            if blob_has_lfs[objectname]:
+                commits_to_check.add(rev)
+
+        return commits_to_check
 
     def get_attributes(self, rev: str, paths: List[str]) -> Dict[str, str]:
         """Query git check-attr for the 'filter' attribute."""
@@ -171,11 +205,12 @@ def main():
 
     for old_rev, new_rev, _ref_name in git.parse_githook_stdin():
         commits = git.get_commit_range(old_rev, new_rev, not_all=True)
+        commits = [sha for sha in commits if sha not in seen]
+        commits_to_check = checker.commits_with_lfs_attributes(commits)
         for sha in commits:
-            if sha in seen:
-                continue
-            success &= checker.check_revision(sha)
-            seen.add(sha)
+            if sha in commits_to_check:
+                success &= checker.check_revision(sha)
+        seen.update(commits)
 
     if not success:
         sys.exit(1)
