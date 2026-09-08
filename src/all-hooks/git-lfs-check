@@ -43,7 +43,7 @@ class LfsChecker:
             # format: <path>: filter: <value>
             # git uses ': ' (colon + space) as a reliable separator
             try:
-                path, attr, value = line.split(": ", 2)
+                path, attr, value = line.rsplit(": ", 2)
             except ValueError:
                 # failed to split line into exactly 3 parts
                 raise RuntimeError(f"Malformed output from git check-attr: '{line}'")

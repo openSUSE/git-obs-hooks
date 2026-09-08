@@ -125,13 +125,13 @@ class GitLfsCheckTest(unittest.TestCase):
         self.assertIn("legacy.png: matches LFS attribute but is NOT an LFS pointer", output)
 
     def test_special_filenames(self):
-        """Test filenames that are tricky to parse (quotes, colons)."""
+        """Test filenames that are tricky to parse (quotes, colons, spaces)."""
         # 1. File named precisely '"' (double quote)
         quote_file = '"'
         self.write_local_file(quote_file, "content")
 
-        # 2. File with colons, matched by LFS
-        colon_file = "with:multiple:colons.png"
+        # 2. File with colons, spaces, matched by LFS
+        colon_file = "with: multiple:colons and :spaces.png"
         self.write_local_file(colon_file, "version https://git-lfs.github.com/spec/v1\noid sha256:789\nsize 10\n")
 
         self.write_local_file(".gitattributes", f'"{colon_file}" filter=lfs\n', mode="a")
