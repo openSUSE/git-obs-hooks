@@ -8,12 +8,43 @@ but were committed as regular Git objects and vice-versa.
 It does NOT verify the integrity of LFS objects on disk.
 """
 
+import os
 import subprocess
 import sys
-from typing import Dict, List
+from typing import Dict, List, Set
 from osc.gitea_api import Git
 
 sys.dont_write_bytecode = True
+
+
+def debug_msg(msg: str) -> None:
+    if os.environ.get("GIT_OBS_HOOKS_DEBUG") == "1":
+        print(f"DEBUG: {msg}", file=sys.stderr)
+
+
+def verbose_msg(msg: str) -> None:
+    if os.environ.get("GIT_OBS_HOOKS_DEBUG") == "1" or os.environ.get("GIT_OBS_HOOKS_VERBOSE") == "1":
+        print(f"VERBOSE: {msg}", file=sys.stderr)
+
+
+def has_lfs_attribute(content: bytes) -> bool:
+    for line in content.splitlines():
+        line = line.strip()
+        if line and not line.startswith(b"#") and b"filter=lfs" in line.split():
+            return True
+    return False
+
+
+def is_lfs_pointer(content: bytes) -> bool:
+    """Check for the expected Git LFS pointer header and required fields."""
+    lines = content.splitlines()
+    if len(lines) < 3 or lines[0] != b"version https://git-lfs.github.com/spec/v1":
+        return False
+
+    has_oid = any(line.startswith(b"oid sha256:") for line in lines[1:])
+    has_size = any(line.startswith(b"size ") for line in lines[1:])
+    return has_oid and has_size
+
 
 class LfsChecker:
     def __init__(self, git: Git):
@@ -26,99 +57,154 @@ class LfsChecker:
             return {}
 
         with subprocess.Popen(
-            ["git", "check-attr", "--source", rev, "--stdin", "filter"],
+            ["git", "check-attr", "-z", "--source", rev, "--stdin", "filter"],
+            cwd=self.git.abspath,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as proc:
+            stdin_data = b"\0".join(p.encode("utf-8", "surrogateescape") for p in paths) + b"\0"
+            stdout, stderr = proc.communicate(input=stdin_data)
+            if proc.returncode != 0:
+                details = stderr.decode("utf-8", "replace").strip() or "unknown git check-attr failure"
+                raise RuntimeError(f"git check-attr failed for revision {rev}: {details}")
+
+        results = {}
+        tokens = stdout.split(b"\0")
+        if tokens and tokens[-1] == b"":
+            tokens.pop()
+
+        if len(tokens) % 3 != 0:
+            raise RuntimeError(f"Malformed output from git check-attr: expected multiple of 3 tokens, got {len(tokens)}")
+
+        for i in range(0, len(tokens), 3):
+            raw_path, _, raw_value = tokens[i : i + 3]
+            path = raw_path.decode("utf-8", "surrogateescape")
+            value = raw_value.decode("utf-8", "replace")
+            results[path] = value
+        return results
+
+    def get_changed_blobs(self, commits: List[str]) -> Dict[str, Set[str]]:
+        """Return added or modified object hashes mapped to their commits."""
+        result: Dict[str, Set[str]] = {}
+
+        with subprocess.Popen(
+            ["git", "diff-tree", "--stdin", "--root", "-r", "--raw", "--no-abbrev", "--no-renames", "--diff-filter=AM", "-m"],
             cwd=self.git.abspath,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=sys.stderr,
             encoding="utf-8",
         ) as proc:
-
-            stdout, _ = proc.communicate(input="\n".join(paths))
+            stdout, _ = proc.communicate(input="\n".join(commits) + "\n")
             if proc.returncode != 0:
-                raise RuntimeError(f"git check-attr failed for revision {rev}")
+                raise RuntimeError("git diff-tree failed while searching for LFS pointer blobs")
 
-        results = {}
+        current_rev = None
         for line in stdout.splitlines():
-            # format: <path>: filter: <value>
-            # git uses ': ' (colon + space) as a reliable separator
+            if not line:
+                continue
+            if not line.startswith(":"):
+                current_rev = line
+                continue
+            if current_rev is None:
+                raise RuntimeError(f"Malformed git diff-tree output: '{line}'")
+
+            fields = line.split(None, 5)
+            if len(fields) < 5:
+                raise RuntimeError(f"Malformed git diff-tree output: '{line}'")
+            result.setdefault(fields[3], set()).add(current_rev)
+
+        return result
+
+    def get_blob_sizes(self, object_hashes) -> Dict[str, int]:
+        """Return sizes for existing blob objects."""
+        if not object_hashes:
+            return {}
+
+        result: Dict[str, int] = {}
+        stdout = subprocess.check_output(
+            ["git", "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+            cwd=self.git.abspath,
+            stderr=sys.stderr,
+            encoding="utf-8",
+            input="\n".join(object_hashes) + "\n",
+        )
+        for line in stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == "missing":
+                continue
+            if len(parts) != 3:
+                raise RuntimeError(f"Malformed git cat-file output: '{line}'")
+            object_hash, object_type, object_size = parts
+            if object_type == "blob":
+                result[object_hash] = int(object_size)
+
+        return result
+
+    def cache_pointers(self, object_hashes, hash_to_size: Dict[str, int]) -> None:
+        """Cache whether the provided blob hashes contain LFS pointers."""
+        to_check = []
+        for object_hash in set(object_hashes):
+            if object_hash in self.cache:
+                continue
+
+            size = hash_to_size.get(object_hash, 0)
+            if size < 50 or size > 1024:
+                self.cache[object_hash] = False
+                continue
+
+            to_check.append(object_hash)
+
+        if not to_check:
+            return
+
+        # Binary mode is required: blobs may contain non-UTF-8 bytes and git
+        # reports object sizes in bytes, so offsets must be byte offsets.
+        with subprocess.Popen(
+            ["git", "cat-file", "--batch"],
+            cwd=self.git.abspath,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,
+            bufsize=1024 * 1024,
+        ) as proc:
+            stdout_stream, _ = proc.communicate(input=("\n".join(to_check) + "\n").encode("utf-8"))
+            if proc.returncode != 0:
+                raise RuntimeError("git cat-file --batch failed")
+
+        offset = 0
+        for object_hash in to_check:
+            newline_idx = stdout_stream.find(b"\n", offset)
+            if newline_idx == -1:
+                raise RuntimeError(f"git cat-file output truncated, expected object {object_hash}")
+
+            header = stdout_stream[offset:newline_idx].decode("utf-8")
+            parts = header.split()
+            if len(parts) == 2 and parts[1] == "missing":
+                self.cache[object_hash] = False
+                offset = newline_idx + 1
+                continue
+
+            if len(parts) != 3:
+                raise RuntimeError(f"Malformed git cat-file header: '{header}'")
+
             try:
-                path, attr, value = line.rsplit(": ", 2)
+                size = int(parts[2])
             except ValueError:
-                # failed to split line into exactly 3 parts
-                raise RuntimeError(f"Malformed output from git check-attr: '{line}'")
+                raise RuntimeError(f"Malformed object size in git cat-file header: '{header}'")
 
-            if attr != "filter":
-                raise RuntimeError(f"Unexpected attribute in git check-attr output: '{attr}'")
+            content_start = newline_idx + 1
+            content_end = content_start + size
+            if content_end > len(stdout_stream):
+                raise RuntimeError(f"git cat-file output truncated for object {object_hash}")
 
-            # Git may quote paths with special characters (core.quotepath).
-            if path.startswith('"') and path.endswith('"'):
-                # handle git's octal/hex escaping
-                try:
-                    path = path[1:-1].encode("utf-8").decode("unicode_escape")
-                except Exception:
-                    path = path[1:-1]
-
-            results[path] = value
-        return results
+            self.cache[object_hash] = is_lfs_pointer(stdout_stream[content_start:content_end])
+            offset = content_end + 1
 
     def verify_blobs(self, rev: str, file_to_hash: Dict[str, str], hash_to_size: Dict[str, int], attrs: Dict[str, str]):
-        """Verify LFS compliance for a set of files using batched cat-file."""
-        to_check = []
-        unique_hashes = set()
-
-        for h in file_to_hash.values():
-            if h in self.cache or h in unique_hashes:
-                continue
-
-            # PREPROCESSING: LFS pointers are tiny (< 1KB), skip any larger blobs
-            if hash_to_size.get(h, 0) > 1024:
-                self.cache[h] = False
-                continue
-
-            to_check.append(h)
-            unique_hashes.add(h)
-
-        if to_check:
-            # NOTE: We must use binary mode (bytes) for cat-file --batch because:
-            # 1. Blobs can contain arbitrary binary data that is not valid UTF-8.
-            # 2. Git reports object size in BYTES. If we used text mode (encoding="utf-8"),
-            #    read(size) would read 'size' CHARACTERS, which breaks protocol parsing
-            #    whenever a multi-byte UTF-8 character is encountered.
-            with subprocess.Popen(
-                ["git", "cat-file", "--batch"],
-                cwd=self.git.abspath,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=sys.stderr,
-                bufsize=1024 * 1024,
-            ) as proc:
-
-                stdout_stream, _ = proc.communicate(input=("\n".join(to_check) + "\n").encode("utf-8"))
-                if proc.returncode != 0:
-                    raise RuntimeError("git cat-file --batch failed")
-
-            # parse the combined output buffer without slicing (zero-copy approach)
-            offset = 0
-            prefix = b"version https://git-lfs.github.com/spec/v1"
-            for h in to_check:
-                newline_idx = stdout_stream.find(b"\n", offset)
-                if newline_idx == -1:
-                    raise RuntimeError(f"git cat-file output truncated, expected object {h}")
-
-                header = stdout_stream[offset:newline_idx].decode("utf-8")
-                try:
-                    _hash, _type, size = header.split()
-                    size = int(size)
-                except ValueError:
-                    raise RuntimeError(f"Malformed git cat-file header or missing object: '{header}'")
-                content_start = newline_idx + 1
-                content_end = content_start + size
-
-                # verify LFS status directly in the buffer using offsets
-                self.cache[h] = stdout_stream.startswith(prefix, content_start, content_end)
-
-                offset = content_end + 1
+        """Verify LFS compliance for a set of files."""
+        self.cache_pointers(file_to_hash.values(), hash_to_size)
 
         # validation phase
         errors = []
@@ -132,7 +218,7 @@ class LfsChecker:
                 errors.append(f"  - {path}: is NOT matched by LFS attribute but IS an LFS pointer")
 
         if errors:
-            print(f"LFS compliance errors in commit {rev}:", file=sys.stderr)
+            print(f"LFS compliance errors in revision {rev}:", file=sys.stderr)
             for err in errors:
                 print(err, file=sys.stderr)
             return False
@@ -140,27 +226,79 @@ class LfsChecker:
 
     def check_revision(self, rev: str) -> bool:
         """Check if the specified revision is LFS compliant."""
-        try:
-            self.git._run_git(["cat-file", "-e", f"{rev}:.gitattributes"], mute_stderr=True)
-        except subprocess.CalledProcessError:
-            return True
+        with subprocess.Popen(
+            ["git", "ls-tree", "-z", "-r", "--long", rev],
+            cwd=self.git.abspath,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as proc:
+            stdout, stderr = proc.communicate()
+            if proc.returncode != 0:
+                details = stderr.decode("utf-8", "replace").strip() or "unknown git ls-tree failure"
+                raise RuntimeError(f"git ls-tree failed for revision {rev}: {details}")
 
-        tree_entries = self.git.ls_tree(rev)
         file_to_hash = {}
         hash_to_size = {}
-        for item in tree_entries:
-            if item["file_type"] != "file":
+        for entry in stdout.split(b"\0"):
+            if not entry:
                 continue
-            path = item["path"]
-            h = item["commit"]
-            file_to_hash[path] = h
-            hash_to_size[h] = item["size"]
+            meta, raw_path = entry.split(b"\t", 1)
+            mode, _, blob_hash, raw_size = meta.split()
+            if mode.startswith(b"100"):
+                path = raw_path.decode("utf-8", "surrogateescape")
+                h = blob_hash.decode("ascii")
+                file_to_hash[path] = h
+                hash_to_size[h] = int(raw_size)
 
         if not file_to_hash:
             return True
 
         attrs = self.get_attributes(rev, list(file_to_hash.keys()))
         return self.verify_blobs(rev, file_to_hash, hash_to_size, attrs)
+
+    def commits_with_lfs_attributes(self, commits: List[str]) -> Set[str]:
+        """Return commits whose .gitattributes enables git-lfs (contains 'filter=lfs')."""
+        if not commits:
+            return set()
+
+        commits_to_check = set()
+        blob_has_lfs = {}
+        stdout = subprocess.check_output(
+            ["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+            cwd=self.git.abspath,
+            stderr=subprocess.DEVNULL,
+            encoding="utf-8",
+            input="\n".join(f"{rev}:.gitattributes" for rev in commits) + "\n",
+        )
+        for rev, line in zip(commits, stdout.splitlines()):
+            objectname, objecttype = line.split()
+            if objecttype != "blob":
+                continue
+
+            if objectname not in blob_has_lfs:
+                content = subprocess.check_output(
+                    ["git", "cat-file", "blob", objectname],
+                    cwd=self.git.abspath,
+                    stderr=subprocess.DEVNULL,
+                )
+                blob_has_lfs[objectname] = has_lfs_attribute(content)
+
+            if blob_has_lfs[objectname]:
+                commits_to_check.add(rev)
+
+        return commits_to_check
+
+    def commits_with_lfs_pointer_changes(self, commits: List[str]) -> Set[str]:
+        """Return commits that add or modify an LFS pointer blob."""
+        blobs = self.get_changed_blobs(commits)
+        sizes = self.get_blob_sizes(blobs)
+        self.cache_pointers(sizes.keys(), sizes)
+        return {
+            rev
+            for object_hash, revisions in blobs.items()
+            if self.cache.get(object_hash, False)
+            for rev in revisions
+        }
 
 
 def main():
@@ -169,13 +307,21 @@ def main():
     seen = set()
     success = True
 
-    for old_rev, new_rev, _ref_name in git.parse_githook_stdin():
-        commits = git.get_commit_range(old_rev, new_rev, not_all=True)
-        for sha in commits:
-            if sha in seen:
-                continue
-            success &= checker.check_revision(sha)
-            seen.add(sha)
+    try:
+        for old_rev, new_rev, _ref_name in git.parse_githook_stdin():
+            commits = git.get_commit_range(old_rev, new_rev, not_all=True)
+            commits = [sha for sha in commits if sha not in seen]
+            commits_to_check = checker.commits_with_lfs_attributes(commits) | checker.commits_with_lfs_pointer_changes(commits)
+            for sha in commits:
+                if sha in commits_to_check:
+                    debug_msg(f"checking LFS compliance for revision {sha}")
+                    success &= checker.check_revision(sha)
+                else:
+                    verbose_msg(f"skipping LFS compliance check for revision {sha} (no LFS rule or pointer)")
+            seen.update(commits)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if not success:
         sys.exit(1)
