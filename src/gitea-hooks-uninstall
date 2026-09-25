@@ -45,3 +45,14 @@ elif [ -n "${CURRENT_DIFF_ORDER_FILE}" ]; then
     echo "  expected: '${DIFF_ORDER_TARGET}'"
     echo "The current value will not be unset."
 fi
+
+ALLOWLIST_FILE="/etc/git-obs-hooks/lfs.allow"
+CURRENT_ALLOWLIST_FILE="$(git config --file "${GITEA_HOME}/.gitconfig" --get git-obs-hooks.lfsAllowlistedRevisionFile ||:)"
+if [ -z "${CURRENT_ALLOWLIST_FILE}" ] || [ "${CURRENT_ALLOWLIST_FILE}" = "${ALLOWLIST_FILE}" ]; then
+    git config --global --unset git-obs-hooks.lfsAllowlistedRevisionFile ||:
+elif [ -n "${CURRENT_ALLOWLIST_FILE}" ]; then
+    echo "WARNING: gitea's .gitconfig currently uses an unexpected git-obs-hooks.lfsAllowlistedRevisionFile:"
+    echo "  current : '${CURRENT_ALLOWLIST_FILE}'"
+    echo "  expected: '${ALLOWLIST_FILE}'"
+    echo "The current value will not be unset."
+fi

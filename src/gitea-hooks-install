@@ -60,3 +60,18 @@ fi
 if [ "${CURRENT_DIFF_ORDER_FILE}" != "${DIFF_ORDER_TARGET}" ]; then
   git config --global diff.orderFile "${DIFF_ORDER_TARGET}"
 fi
+
+ALLOWLIST_FILE="/etc/git-obs-hooks/lfs.allow"
+if [ -f "${ALLOWLIST_FILE}" ]; then
+  CURRENT_ALLOWLIST_FILE="$(git config --file "${GITEA_HOME}/.gitconfig" --get git-obs-hooks.lfsAllowlistedRevisionFile ||:)"
+  if [ -n "${CURRENT_ALLOWLIST_FILE}" ] && [ "${CURRENT_ALLOWLIST_FILE}" != "${ALLOWLIST_FILE}" ]; then
+    echo "WARNING: gitea's .gitconfig currently uses an unexpected git-obs-hooks.lfsAllowlistedRevisionFile:"
+    echo "  current : '${CURRENT_ALLOWLIST_FILE}'"
+    echo "  expected: '${ALLOWLIST_FILE}'"
+    echo "The current value will be overwritten."
+  fi
+
+  if [ "${CURRENT_ALLOWLIST_FILE}" != "${ALLOWLIST_FILE}" ]; then
+    git config --global git-obs-hooks.lfsAllowlistedRevisionFile "${ALLOWLIST_FILE}"
+  fi
+fi

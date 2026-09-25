@@ -1,7 +1,7 @@
 #
 # spec file for package git-obs-hooks
 #
-# Copyright (c) 2026 SUSE LLC
+# Copyright (c) 2026 SUSE LLC and contributors
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -58,6 +58,7 @@ Server-side git hooks for Gitea based on Gitea's generated hooks.
 
 %install
 install -d %{buildroot}/usr/libexec/git-obs-hooks
+install -d %{buildroot}%{_sysconfdir}/git-obs-hooks
 install -m 644 src/git-diff-order %{buildroot}/usr/libexec/git-obs-hooks/
 install -m 755 src/git-obs-hooks-install %{buildroot}/usr/libexec/git-obs-hooks/
 install -m 755 src/git-obs-hooks-uninstall %{buildroot}/usr/libexec/git-obs-hooks/
@@ -76,6 +77,7 @@ cp -rv src/{all-hooks,gitea,git-obs,common} %{buildroot}/usr/libexec/git-obs-hoo
 /usr/libexec/git-obs-hooks/gitea/*
 /usr/libexec/git-obs-hooks/gitea-hooks-install
 /usr/libexec/git-obs-hooks/gitea-hooks-uninstall
+%dir %attr(0755,root,root) %{_sysconfdir}/git-obs-hooks
 
 %post gitea
 if getent passwd gitea >/dev/null; then
